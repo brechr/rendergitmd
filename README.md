@@ -4,7 +4,8 @@ Aggregate a git codebase into a single markdown file with syntax highlighting, s
 
 ## Features
 
-- 📝 Converts entire git repositories into a single markdown file
+- 📝 Converts entire git repositories into markdown files
+- 📂 **Hierarchical depth mode** - split large repos into multiple files by directory structure
 - 🎨 Automatic syntax highlighting based on file extensions (supports 50+ languages)
 - 📋 YAML frontmatter with repository metadata (origin URL, branch, commit, author)
 - 📄 Page separators (`---`) between files
@@ -70,6 +71,47 @@ python3 rendergitmd.py --no-default-ignore
 ```bash
 python3 rendergitmd.py --max-size 2048
 ```
+
+### Hierarchical depth mode (split large repos)
+
+For large repositories, use `--depth` to split output into multiple files organized by directory structure. This helps manage token limits and makes navigation easier.
+
+**depth=0** (default): Single file with everything
+
+```bash
+python3 rendergitmd.py -o repo.md
+# Creates: repo.md (all files)
+```
+
+**depth=1**: Split by top-level directories
+
+```bash
+python3 rendergitmd.py --depth 1 -o output/repo.md
+# Creates:
+#   output/repo.md         (index with links)
+#   output/repo-root.md    (root-level files)
+#   output/repo-src.md     (all files under src/)
+#   output/repo-tests.md   (all files under tests/)
+#   output/repo-docs.md    (all files under docs/)
+```
+
+**depth=2**: Split by second-level directories
+
+```bash
+python3 rendergitmd.py --depth 2 -o output/repo.md
+# Creates:
+#   output/repo.md              (index)
+#   output/repo-src.md          (files directly in src/)
+#   output/repo-src-utils.md    (files in src/utils/)
+#   output/repo-src-api.md      (files in src/api/)
+#   output/repo-tests.md        (all test files)
+```
+
+**Use depth mode when:**
+- Repository is too large for a single file
+- You want to focus on specific parts of the codebase
+- Token limits are a concern for LLM context windows
+- You need to share specific subsections independently
 
 ## Output Format
 
@@ -140,11 +182,12 @@ python3 rendergitmd.py -o output.md -i "*.test.js" -i "docs/*"
 
 ## Use Cases
 
-- 📤 Sharing codebases with AI assistants (Claude, GPT, etc.)
+- 📤 **Sharing codebases with AI assistants** (Claude, GPT, etc.) - depth mode helps stay within token limits
 - 📚 Creating documentation snapshots
 - 👀 Code reviews in markdown-friendly platforms
 - 📖 Archiving project states
 - 🎓 Educational purposes (sharing code examples)
+- 🔍 Focusing on specific parts of large codebases without overwhelming context
 
 ## License
 

@@ -252,6 +252,205 @@ def is_binary(file_path: str) -> bool:
         return True
 
 
+def group_files_by_depth(files: List[str], depth: int) -> Dict[str, List[str]]:
+    """
+    Group files by directory at the specified depth level.
+
+    depth=0: All files in one group
+    depth=1: Group by top-level directory
+    depth=2: Group by second-level directory, etc.
+
+    Returns dict mapping group names to file lists.
+    """
+    if depth == 0:
+        return {'': files}  # Empty string means all files in root output
+
+    groups = {}
+
+    for file_path in files:
+        parts = Path(file_path).parts
+
+        if len(parts) <= depth:
+            # File is at a shallower level than depth
+            # Put it in the group for its deepest directory, or root if it's at the root
+            if len(parts) == 1:
+                # Root level file
+                group_name = ''
+            else:
+                # Use all parts up to the file as the group
+                group_name = '/'.join(parts[:-1])
+        else:
+            # File is deeper than depth - group by path at depth level
+            group_name = '/'.join(parts[:depth])
+
+        if group_name not in groups:
+            groups[group_name] = []
+        groups[group_name].append(file_path)
+
+    return groups
+
+
+def sanitize_filename(name: str) -> str:
+    """Convert a path/name into a safe filename"""
+    if not name:
+        return 'root'
+    return name.replace('/', '-').replace('\\', '-')
+
+
+def write_file_section(out, repo_path: Path, file_path: str, max_file_size: int,
+                       include_separator: bool = True) -> None:
+    """Write a single file section to the output"""
+    full_path = repo_path / file_path
+
+    # Create anchor
+    anchor = file_path.replace('/', '-').replace('.', '-').replace('_', '-').lower()
+
+    # Write file header
+    out.write(f"## {file_path}\n\n")
+    out.write(f'<a id="{anchor}"></a>\n\n')
+
+    # Check if file is binary
+    if is_binary(str(full_path)):
+        out.write('*Binary file*\n\n')
+    else:
+        try:
+            # Check file size
+            file_size = full_path.stat().st_size
+            if file_size > max_file_size:
+                out.write(f'*File too large ({file_size / 1024 / 1024:.2f} MB), skipped*\n\n')
+            else:
+                # Read file content
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # Get language hint
+                lang_hint = get_language_hint(file_path)
+
+                # Write code block
+                out.write(f'```{lang_hint}\n')
+                out.write(content)
+                if not content.endswith('\n'):
+                    out.write('\n')
+                out.write('```\n\n')
+        except Exception as e:
+            out.write(f'*Error reading file: {e}*\n\n')
+
+    # Add page separator
+    if include_separator:
+        out.write('---\n\n')
+
+
+def generate_hierarchical_markdown(repo_path: str, output_base: str, ignore_patterns: List[str],
+                                   max_file_size: int, depth: int) -> None:
+    """Generate multiple markdown files organized by directory depth"""
+    repo_path = Path(repo_path).resolve()
+
+    # Get git info
+    git_info = get_git_info(str(repo_path))
+
+    # Collect files
+    print(f"Scanning repository: {repo_path}")
+    files = collect_files(repo_path, ignore_patterns)
+    print(f"Found {len(files)} files to include")
+
+    # Group files by depth
+    groups = group_files_by_depth(files, depth)
+    print(f"Grouped into {len(groups)} sections at depth {depth}")
+
+    # Determine output directory and base name
+    output_path = Path(output_base)
+    if output_path.suffix == '.md':
+        # User specified a file like 'repo.md', use its directory and stem
+        output_dir = output_path.parent
+        base_name = output_path.stem
+    else:
+        # User specified a directory or no extension
+        output_dir = output_path
+        base_name = 'repository'
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate index file
+    index_file = output_dir / f"{base_name}.md"
+    subfiles = []
+
+    with open(index_file, 'w', encoding='utf-8') as idx:
+        # Write frontmatter
+        idx.write('---\n')
+        idx.write(f"title: {repo_path.name}\n")
+        idx.write(f"repository: {git_info['origin_url']}\n")
+        idx.write(f"branch: {git_info['branch']}\n")
+        idx.write(f"commit: {git_info['commit']}\n")
+        idx.write(f"author: {git_info['author']}\n")
+        idx.write(f"date: {git_info['date']}\n")
+        idx.write(f"files: {len(files)}\n")
+        idx.write(f"depth: {depth}\n")
+        idx.write('---\n\n')
+
+        idx.write(f"# {repo_path.name}\n\n")
+        idx.write("This repository has been split into multiple files for easier navigation.\n\n")
+
+        # If depth > 0, write links to subfiles
+        if depth > 0:
+            idx.write("## Sections\n\n")
+
+            for group_name in sorted(groups.keys()):
+                group_files = groups[group_name]
+                subfile_name = f"{base_name}-{sanitize_filename(group_name)}.md"
+                subfiles.append((group_name, subfile_name, group_files))
+
+                display_name = group_name if group_name else '(root files)'
+                idx.write(f"- [{display_name}](./{subfile_name}) ({len(group_files)} files)\n")
+
+            idx.write('\n')
+        else:
+            # depth == 0, write everything in index file
+            idx.write("## Table of Contents\n\n")
+            for file_path in files:
+                anchor = file_path.replace('/', '-').replace('.', '-').replace('_', '-').lower()
+                idx.write(f"- [{file_path}](#{anchor})\n")
+            idx.write('\n')
+
+            # Write all files
+            for i, file_path in enumerate(files):
+                write_file_section(idx, repo_path, file_path, max_file_size,
+                                 include_separator=(i < len(files) - 1))
+
+    print(f"Generated index: {index_file}")
+
+    # Generate subfiles if depth > 0
+    if depth > 0:
+        for group_name, subfile_name, group_files in subfiles:
+            subfile_path = output_dir / subfile_name
+
+            with open(subfile_path, 'w', encoding='utf-8') as sub:
+                # Write frontmatter
+                sub.write('---\n')
+                sub.write(f"title: {repo_path.name} - {group_name or 'root'}\n")
+                sub.write(f"section: {group_name or 'root'}\n")
+                sub.write(f"files: {len(group_files)}\n")
+                sub.write('---\n\n')
+
+                # Link back to index
+                sub.write(f"[← Back to index](./{base_name}.md)\n\n")
+
+                sub.write(f"# {group_name or '(root files)'}\n\n")
+
+                # Table of contents
+                sub.write("## Table of Contents\n\n")
+                for file_path in group_files:
+                    anchor = file_path.replace('/', '-').replace('.', '-').replace('_', '-').lower()
+                    sub.write(f"- [{file_path}](#{anchor})\n")
+                sub.write('\n')
+
+                # Write files
+                for i, file_path in enumerate(group_files):
+                    write_file_section(sub, repo_path, file_path, max_file_size,
+                                     include_separator=(i < len(group_files) - 1))
+
+            print(f"Generated: {subfile_path}")
+
+
 def generate_markdown(repo_path: str, output_file: str, ignore_patterns: List[str],
                      max_file_size: int = 1024 * 1024) -> None:
     """Generate markdown file from git repository"""
@@ -362,6 +561,12 @@ def main():
         default=1024,
         help='Maximum file size in KB to include (default: 1024)'
     )
+    parser.add_argument(
+        '--depth',
+        type=int,
+        default=0,
+        help='Directory depth for splitting output (0=single file, 1=split by top-level dirs, etc.)'
+    )
 
     args = parser.parse_args()
 
@@ -379,13 +584,24 @@ def main():
         print(f"Error: Not a git repository: {args.repo_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Generate markdown
-    generate_markdown(
-        str(repo_path),
-        args.output,
-        ignore_patterns,
-        args.max_size * 1024
-    )
+    max_file_size = args.max_size * 1024
+
+    # Generate markdown (hierarchical or flat based on depth)
+    if args.depth > 0:
+        generate_hierarchical_markdown(
+            str(repo_path),
+            args.output,
+            ignore_patterns,
+            max_file_size,
+            args.depth
+        )
+    else:
+        generate_markdown(
+            str(repo_path),
+            args.output,
+            ignore_patterns,
+            max_file_size
+        )
 
 
 if __name__ == '__main__':
